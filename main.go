@@ -10,13 +10,13 @@ import (
 )
 
 func main() {
-	pipe := Hasher(5, 1000000)
+	operator := Hasher(5, 1000000)
 
-	record := pipe(makeRecordFunc)
-	count := pipe(makeCountFunc)
+	record := operator(makeRecordFunc)
+	count := operator(makeCountFunc)
 
 	// example of extending Hasher with a new custom operator that returns the matrixMutex.
-	getMatrixMutex := pipe(func(options HasherOptions) func(term string) interface{} {
+	getMatrixMutex := operator(func(options HasherOptions) func(term string) interface{} {
 		return func(term string) interface{} {
 			return options.matrixMutex
 		}
@@ -138,8 +138,8 @@ type HasherOptions struct {
 	depth       int
 }
 
-// makePipeFunc takes a func and provides HasherOptions to it. Used to create new operator funcs on Hasher.
-func makePipeFunc(options HasherOptions) func(func(HasherOptions) func(term string) interface{}) func(term string) interface{} {
+// makeOperatorFunc takes a func and provides HasherOptions to it. Used to create new operator funcs on Hasher.
+func makeOperatorFunc(options HasherOptions) func(func(HasherOptions) func(term string) interface{}) func(term string) interface{} {
 	return func(operator func(HasherOptions) func(term string) interface{}) func(term string) interface{} {
 		return operator(options)
 	}
@@ -170,7 +170,7 @@ func Hasher(depth int, length int) (pipe func(func(HasherOptions) func(term stri
 		depth:       depth,
 	}
 
-	return makePipeFunc(*options)
+	return makeOperatorFunc(*options)
 }
 
 // genSeeds Creates a splice of maphash seeds.
