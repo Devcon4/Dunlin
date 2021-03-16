@@ -10,10 +10,25 @@ import (
 )
 
 func main() {
-	record, count := Hasher(5, 1000000)
+	pipe := Hasher(5, 1000000)
+
+	record := pipe(makeRecordFunc)
+	count := pipe(makeCountFunc)
+
+	// example of extending Hasher with a new custom operator that returns the matrixMutex.
+	getMatrixMutex := pipe(func(options HasherOptions) func(term string) interface{} {
+		return func(term string) interface{} {
+			return options.matrixMutex
+		}
+	})
+
+	// because go doesn't have generic types yet we have to still pass a term even though this func doesn't use it.
+	mut := getMatrixMutex("").(*sync.Mutex)
+	fmt.Println(mut)
+
 	rand.Seed(time.Now().UnixNano())
 
-	recordCount := 1 << 24
+	recordCount := 1 << 21
 	fmt.Println(recordCount)
 
 	for i := 0; i < recordCount; i++ {
@@ -22,7 +37,7 @@ func main() {
 
 	searchTerm := randLetters(3)
 	fmt.Println(searchTerm)
-	fmt.Println(count(searchTerm))
+	fmt.Println(count(searchTerm).(int))
 }
 
 // randLetters creates a random string for the given length.
@@ -36,15 +51,15 @@ func randLetters(length int) string {
 }
 
 // makeRecordFunc creates a record func, used with hasher.
-func makeRecordFunc(matrix []map[[10]byte]int, matrixMutex *sync.Mutex, seeds []maphash.Seed, wg *sync.WaitGroup) func(term string) {
-	return func(term string) {
+func makeRecordFunc(options HasherOptions) func(term string) interface{} {
+	return func(term string) interface{} {
 		// Use a waitGroup and inner closure to parallelize work.
-		wg.Add(1)
+		options.wg.Add(1)
 
 		go func() {
-			defer wg.Done()
+			defer options.wg.Done()
 			// Iterate hash funcs.
-			for i, seed := range seeds {
+			for i, seed := range options.seeds {
 				// Create maphash with seed.
 				hashFunc := &maphash.Hash{}
 				hashFunc.SetSeed(seed)
@@ -62,25 +77,26 @@ func makeRecordFunc(matrix []map[[10]byte]int, matrixMutex *sync.Mutex, seeds []
 
 				// Increment count at hash index.
 				// Use mutex to lock matrix accross goroutines.
-				matrixMutex.Lock()
-				matrix[i][btFixed]++
-				matrixMutex.Unlock()
+				options.matrixMutex.Lock()
+				options.matrix[i][btFixed]++
+				options.matrixMutex.Unlock()
 			}
 		}()
+		return nil
 	}
 }
 
 // makeCountFunc creates a count func, used with hasher.
-func makeCountFunc(matrix []map[[10]byte]int, matrixMutex *sync.Mutex, seeds []maphash.Seed, wg *sync.WaitGroup, depth int) func(term string) int {
-	return func(term string) int {
+func makeCountFunc(options HasherOptions) func(term string) interface{} {
+	return func(term string) interface{} {
 		// Splice to store each hashFuncs count.
-		hashes := make([]int, depth)
+		hashes := make([]int, options.depth)
 
 		// Wait for the workgroup to be cleared before counting.
 		// This ensures count happens after all record goroutines have ran.
-		wg.Wait()
+		options.wg.Wait()
 		// Loop the hashFuncs.
-		for i, seed := range seeds {
+		for i, seed := range options.seeds {
 			// Create maphash with seed.
 			hashFunc := &maphash.Hash{}
 			hashFunc.SetSeed(seed)
@@ -97,9 +113,9 @@ func makeCountFunc(matrix []map[[10]byte]int, matrixMutex *sync.Mutex, seeds []m
 			copy(btFixed[:], bt)
 
 			// Grab the count for the hash from the sketch table and add it to the hashes splice.
-			matrixMutex.Lock()
-			hashes[i] = matrix[i][btFixed]
-			matrixMutex.Unlock()
+			options.matrixMutex.Lock()
+			hashes[i] = options.matrix[i][btFixed]
+			options.matrixMutex.Unlock()
 		}
 
 		// Find the min count in the hashes array.
@@ -113,9 +129,25 @@ func makeCountFunc(matrix []map[[10]byte]int, matrixMutex *sync.Mutex, seeds []m
 	}
 }
 
+// HasherOptions is a struct to make passing hasher state easier.
+type HasherOptions struct {
+	matrix      []map[[10]byte]int
+	matrixMutex *sync.Mutex
+	seeds       []maphash.Seed
+	wg          *sync.WaitGroup
+	depth       int
+}
+
+// makePipeFunc takes a func and provides HasherOptions to it. Used to create new operator funcs on Hasher.
+func makePipeFunc(options HasherOptions) func(func(HasherOptions) func(term string) interface{}) func(term string) interface{} {
+	return func(operator func(HasherOptions) func(term string) interface{}) func(term string) interface{} {
+		return operator(options)
+	}
+}
+
 // Hasher Creates a Count min sketch table.
 // Returns two funcs, One to add to the table and another to get counts from that table.
-func Hasher(depth int, length int) (record func(string), count func(string) int) {
+func Hasher(depth int, length int) (pipe func(func(HasherOptions) func(term string) interface{}) func(term string) interface{}) {
 	// Create array of maps to store hash occurences.
 	matrixMutex := &sync.Mutex{}
 	// Create waitGroup to sync record and count tasks.
@@ -130,13 +162,15 @@ func Hasher(depth int, length int) (record func(string), count func(string) int)
 	// Setup list of seeds to use for each hash function.
 	seeds := genSeeds(depth)
 
-	// Record adds a string to the sketch table.
-	record = makeRecordFunc(matrix, matrixMutex, seeds, wg)
+	options := &HasherOptions{
+		matrix:      matrix,
+		matrixMutex: matrixMutex,
+		seeds:       seeds,
+		wg:          wg,
+		depth:       depth,
+	}
 
-	// Count returns the number of occurences a term appears in the sketch.
-	count = makeCountFunc(matrix, matrixMutex, seeds, wg, depth)
-
-	return record, count
+	return makePipeFunc(*options)
 }
 
 // genSeeds Creates a splice of maphash seeds.
